@@ -1,0 +1,42 @@
+﻿-- ============================================================================
+-- Timezone Conversion Functions (Issue #61 fix)
+-- Added: 2026-07-21
+-- Rules applied: CR-001 (naming), CR-009 (error handling), CR-011 (no creds)
+-- ============================================================================
+
+CREATE FUNCTION GetTimezoneOffset(IN sOpCoId CHARACTER) RETURNS INTEGER
+BEGIN
+    DECLARE iOffset INTEGER 0;
+    CASE sOpCoId
+        WHEN 'NSP'  THEN SET iOffset = -6;   -- Mountain Standard Time
+        WHEN 'PSCO' THEN SET iOffset = -7;   -- Mountain Daylight Time
+        WHEN 'SPS'  THEN SET iOffset = -6;   -- Central Standard Time
+        WHEN 'NSPW' THEN SET iOffset = -8;   -- Pacific Standard Time
+        ELSE             SET iOffset = 0;    -- Default UTC
+    END CASE;
+    RETURN iOffset;
+END;
+
+CREATE FUNCTION ConvertUTCtoLocal(IN tsUTC TIMESTAMP, IN sOpCoId CHARACTER) RETURNS TIMESTAMP
+BEGIN
+    DECLARE iOffset INTEGER;
+    SET iOffset = GetTimezoneOffset(sOpCoId);
+    RETURN CAST(tsUTC + CAST(iOffset AS INTERVAL HOUR) AS TIMESTAMP);
+END;
+
+CREATE FUNCTION FormatETRDisplay(IN tsUTC TIMESTAMP, IN sOpCoId CHARACTER) RETURNS CHARACTER
+BEGIN
+    DECLARE tsLocal TIMESTAMP;
+    SET tsLocal = ConvertUTCtoLocal(tsUTC, sOpCoId);
+    RETURN CAST(tsLocal AS CHARACTER FORMAT 'yyyy-MM-dd HH:mm:ss');
+END;
+
+CREATE FUNCTION ValidateTimezone(IN sTimezone CHARACTER) RETURNS BOOLEAN
+BEGIN
+    RETURN sTimezone IN ('NSP', 'PSCO', 'SPS', 'NSPW');
+END;
+
+CREATE FUNCTION GetCurrentLocalTime(IN sOpCoId CHARACTER) RETURNS TIMESTAMP
+BEGIN
+    RETURN ConvertUTCtoLocal(CURRENT_TIMESTAMP, sOpCoId);
+END;
