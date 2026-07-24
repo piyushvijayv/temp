@@ -1,0 +1,162 @@
+BROKER SCHEMA esql.routine
+
+/**
+ * SAP_ADMS_ErrorHandler.esql
+ * 
+ * Purpose: Common error handling module for all SAP-ADMS integration flows
+ * Handles exceptions, SOAP faults, and creates standardized error responses
+ */
+
+CREATE COMPUTE MODULE SAP_ADMS_ErrorHandler
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- Declare variables for error handling
+		DECLARE errorCode CHARACTER '';
+		DECLARE errorMessage CHARACTER '';
+		DECLARE errorDetail CHARACTER '';
+		DECLARE errorSource CHARACTER '';
+		
+		-- Set output properties
+		SET OutputRoot.Properties = InputRoot.Properties;
+		SET OutputRoot.Properties.MessageDomain = 'JSON';
+		
+		-- Create JSON error response
+		CREATE FIELD OutputRoot.JSON.Data;
+		DECLARE refOutput REFERENCE TO OutputRoot.JSON.Data;
+		
+		-- Check if exception list exists
+		IF EXISTS(InputExceptionList.*[]) THEN
+			-- Parse exception list
+			CALL ParseExceptionList(InputExceptionList, errorCode, errorMessage, errorDetail, errorSource);
+			
+			SET refOutput.status = 'ERROR';
+			SET refOutput.errorCode = errorCode;
+			SET refOutput.errorMessage = errorMessage;
+			SET refOutput.errorDetail = errorDetail;
+			SET refOutput.errorSource = errorSource;
+			SET refOutput.timestamp = CURRENT_TIMESTAMP;
+			
+			-- Include transaction ID if available
+			IF EXISTS(Environment.Variables.TransactionId[]) THEN
+				SET refOutput.transactionId = Environment.Variables.TransactionId;
+			END IF;
+			
+			-- Include original request details if available
+			IF EXISTS(Environment.Variables.OriginalRequest.incidentId[]) THEN
+				SET refOutput.incidentId = Environment.Variables.OriginalRequest.incidentId;
+			END IF;
+			
+			-- Set appropriate HTTP status code based on error type
+			IF errorCode LIKE '%VALIDATION%' OR errorCode LIKE '%MANDATORY%' THEN
+				SET OutputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code" = 400; -- Bad Request
+			ELSEIF errorCode LIKE '%AUTHENTICATION%' OR errorCode LIKE '%AUTHORIZATION%' THEN
+				SET OutputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code" = 401; -- Unauthorized
+			ELSEIF errorCode LIKE '%TIMEOUT%' THEN
+				SET OutputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code" = 504; -- Gateway Timeout
+			ELSE
+				SET OutputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code" = 500; -- Internal Server Error
+			END IF;
+		ELSE
+			-- Generic error response
+			SET refOutput.status = 'ERROR';
+			SET refOutput.errorCode = 'UNKNOWN_ERROR';
+			SET refOutput.errorMessage = 'An unexpected error occurred';
+			SET refOutput.timestamp = CURRENT_TIMESTAMP;
+			
+			SET OutputRoot.HTTPResponseHeader."X-Original-HTTP-Status-Code" = 500;
+		END IF;
+		
+		-- Add correlation ID for tracking
+		IF EXISTS(Environment.Variables.TransactionId[]) THEN
+			SET OutputRoot.HTTPResponseHeader."X-Correlation-ID" = Environment.Variables.TransactionId;
+		END IF;
+		
+		-- Log error details (in production, this would integrate with logging framework)
+		CALL LogError(errorCode, errorMessage, errorDetail, errorSource);
+		
+		RETURN TRUE;
+	END;
+	
+	/**
+	 * Parse exception list to extract error details
+	 */
+	CREATE PROCEDURE ParseExceptionList(
+		IN exceptionList REFERENCE,
+		OUT errorCode CHARACTER,
+		OUT errorMessage CHARACTER,
+		OUT errorDetail CHARACTER,
+		OUT errorSource CHARACTER
+	)
+	BEGIN
+		DECLARE refException REFERENCE TO exceptionList.*[1];
+		
+		-- Navigate through exception list
+		WHILE LASTMOVE(refException) DO
+			-- Extract error information
+			IF refException.Number IS NOT NULL THEN
+				SET errorCode = CAST(refException.Number AS CHARACTER);
+			END IF;
+			
+			IF refException.Text IS NOT NULL THEN
+				IF errorMessage = '' THEN
+					SET errorMessage = refException.Text;
+				ELSE
+					SET errorDetail = errorDetail || '; ' || refException.Text;
+				END IF;
+			END IF;
+			
+			IF refException.Label IS NOT NULL THEN
+				SET errorSource = refException.Label;
+			END IF;
+			
+			-- Check for user exceptions
+			IF refException.Insert IS NOT NULL THEN
+				IF errorMessage = '' THEN
+					SET errorMessage = CAST(refException.Insert[1].Text AS CHARACTER);
+				END IF;
+				IF errorDetail = '' AND EXISTS(refException.Insert[2].Text[]) THEN
+					SET errorDetail = CAST(refException.Insert[2].Text AS CHARACTER);
+				END IF;
+			END IF;
+			
+			-- Move to next exception
+			MOVE refException NEXTSIBLING;
+		END WHILE;
+		
+		-- Set default values if not found
+		IF errorCode = '' THEN
+			SET errorCode = 'UNKNOWN_ERROR';
+		END IF;
+		
+		IF errorMessage = '' THEN
+			SET errorMessage = 'An error occurred during processing';
+		END IF;
+	END;
+	
+	/**
+	 * Log error details (placeholder for actual logging implementation)
+	 */
+	CREATE PROCEDURE LogError(
+		IN errorCode CHARACTER,
+		IN errorMessage CHARACTER,
+		IN errorDetail CHARACTER,
+		IN errorSource CHARACTER
+	)
+	BEGIN
+		-- In production, this would integrate with enterprise logging framework
+		-- For now, this is a placeholder
+		-- Example: Write to database, send to monitoring system, etc.
+		DECLARE logMessage CHARACTER;
+		SET logMessage = 'ERROR: ' || errorCode || ' - ' || errorMessage;
+		
+		IF errorDetail <> '' THEN
+			SET logMessage = logMessage || ' | Detail: ' || errorDetail;
+		END IF;
+		
+		IF errorSource <> '' THEN
+			SET logMessage = logMessage || ' | Source: ' || errorSource;
+		END IF;
+		
+		-- Actual logging implementation would go here
+	END;
+END MODULE;
