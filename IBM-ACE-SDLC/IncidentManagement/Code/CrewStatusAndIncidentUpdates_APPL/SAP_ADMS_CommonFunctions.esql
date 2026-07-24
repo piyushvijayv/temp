@@ -1,0 +1,256 @@
+BROKER SCHEMA esql.routine
+
+/**
+ * SAP_ADMS_CommonFunctions.esql
+ * 
+ * Purpose: Shared library of common functions used across all SAP-ADMS integration flows
+ * Contains utility functions for validation, transformation, and data manipulation
+ */
+
+/**
+ * Validate mandatory field exists and is not empty
+ */
+CREATE FUNCTION ValidateMandatoryField(
+	IN fieldValue CHARACTER,
+	IN fieldName CHARACTER
+) RETURNS BOOLEAN
+BEGIN
+	IF fieldValue IS NULL OR TRIM(fieldValue) = '' THEN
+		THROW USER EXCEPTION VALUES('Mandatory field missing or empty', fieldName || ' is required');
+		RETURN FALSE;
+	END IF;
+	RETURN TRUE;
+END;
+
+/**
+ * Generate unique transaction ID
+ */
+CREATE FUNCTION GenerateTransactionId() RETURNS CHARACTER
+BEGIN
+	RETURN CAST(CURRENT_TIMESTAMP AS CHARACTER FORMAT 'yyyyMMddHHmmssSSS') || 
+	       '_' || 
+	       CAST(RAND() * 10000 AS CHARACTER);
+END;
+
+/**
+ * Format timestamp to ISO 8601 format
+ */
+CREATE FUNCTION FormatTimestampISO8601(
+	IN timestamp TIMESTAMP
+) RETURNS CHARACTER
+BEGIN
+	RETURN CAST(timestamp AS CHARACTER FORMAT 'yyyy-MM-ddTHH:mm:ss.SSSZ');
+END;
+
+/**
+ * Parse ISO 8601 timestamp string to TIMESTAMP
+ */
+CREATE FUNCTION ParseISO8601Timestamp(
+	IN timestampStr CHARACTER
+) RETURNS TIMESTAMP
+BEGIN
+	DECLARE result TIMESTAMP;
+	
+	-- Try different timestamp formats
+	BEGIN
+		SET result = CAST(timestampStr AS TIMESTAMP FORMAT 'yyyy-MM-ddTHH:mm:ss.SSSZ');
+	EXCEPTION
+		BEGIN
+			SET result = CAST(timestampStr AS TIMESTAMP FORMAT 'yyyy-MM-ddTHH:mm:ssZ');
+		EXCEPTION
+			BEGIN
+				SET result = CAST(timestampStr AS TIMESTAMP FORMAT 'yyyy-MM-dd HH:mm:ss');
+			EXCEPTION
+				SET result = CURRENT_TIMESTAMP;
+			END;
+		END;
+	END;
+	
+	RETURN result;
+END;
+
+/**
+ * Validate OpCo code
+ */
+CREATE FUNCTION ValidateOpCo(
+	IN opco CHARACTER
+) RETURNS BOOLEAN
+BEGIN
+	DECLARE validOpCos CHARACTER 'NSP,PSCO,SPS';
+	
+	IF POSITION(opco IN validOpCos) > 0 THEN
+		RETURN TRUE;
+	ELSE
+		THROW USER EXCEPTION VALUES('Invalid OpCo', 'OpCo must be one of: NSP, PSCO, SPS');
+		RETURN FALSE;
+	END IF;
+END;
+
+/**
+ * Sanitize string input (remove special characters, trim)
+ */
+CREATE FUNCTION SanitizeString(
+	IN inputStr CHARACTER
+) RETURNS CHARACTER
+BEGIN
+	DECLARE sanitized CHARACTER;
+	
+	-- Trim whitespace
+	SET sanitized = TRIM(inputStr);
+	
+	-- Remove control characters
+	SET sanitized = REPLACE(sanitized, CHR(0), '');
+	SET sanitized = REPLACE(sanitized, CHR(9), ' ');  -- Tab to space
+	SET sanitized = REPLACE(sanitized, CHR(10), ' '); -- LF to space
+	SET sanitized = REPLACE(sanitized, CHR(13), ' '); -- CR to space
+	
+	RETURN sanitized;
+END;
+
+/**
+ * Build SOAP authentication header
+ */
+CREATE PROCEDURE BuildSOAPAuthHeader(
+	INOUT refHeader REFERENCE,
+	IN username CHARACTER,
+	IN password CHARACTER
+)
+BEGIN
+	CREATE FIELD refHeader.inc:Authentication;
+	DECLARE refAuth REFERENCE TO refHeader.inc:Authentication;
+	
+	SET refAuth.inc:Username = COALESCE(username, 'SAP_USER');
+	SET refAuth.inc:Password = COALESCE(password, '');
+	SET refAuth.inc:Timestamp = CURRENT_TIMESTAMP;
+END;
+
+/**
+ * Extract error message from SOAP fault
+ */
+CREATE FUNCTION ExtractSOAPFaultMessage(
+	IN refSoapFault REFERENCE
+) RETURNS CHARACTER
+BEGIN
+	DECLARE errorMsg CHARACTER '';
+	
+	IF EXISTS(refSoapFault.faultstring[]) THEN
+		SET errorMsg = refSoapFault.faultstring;
+	ELSEIF EXISTS(refSoapFault.faultcode[]) THEN
+		SET errorMsg = 'SOAP Fault: ' || refSoapFault.faultcode;
+	ELSE
+		SET errorMsg = 'Unknown SOAP Fault occurred';
+	END IF;
+	
+	RETURN errorMsg;
+END;
+
+/**
+ * Validate incident ID format
+ */
+CREATE FUNCTION ValidateIncidentId(
+	IN incidentId CHARACTER
+) RETURNS BOOLEAN
+BEGIN
+	-- Incident ID should be alphanumeric and not empty
+	IF incidentId IS NULL OR TRIM(incidentId) = '' THEN
+		THROW USER EXCEPTION VALUES('Invalid Incident ID', 'Incident ID cannot be empty');
+		RETURN FALSE;
+	END IF;
+	
+	-- Additional format validation can be added here
+	-- For example: length check, pattern matching, etc.
+	
+	RETURN TRUE;
+END;
+
+/**
+ * Validate crew ID format
+ */
+CREATE FUNCTION ValidateCrewId(
+	IN crewId CHARACTER
+) RETURNS BOOLEAN
+BEGIN
+	-- Crew ID should be alphanumeric and not empty
+	IF crewId IS NULL OR TRIM(crewId) = '' THEN
+		THROW USER EXCEPTION VALUES('Invalid Crew ID', 'Crew ID cannot be empty');
+		RETURN FALSE;
+	END IF;
+	
+	RETURN TRUE;
+END;
+
+/**
+ * Validate resolution code
+ */
+CREATE FUNCTION ValidateResolutionCode(
+	IN resolutionCode CHARACTER
+) RETURNS BOOLEAN
+BEGIN
+	-- Resolution code should not be empty
+	IF resolutionCode IS NULL OR TRIM(resolutionCode) = '' THEN
+		THROW USER EXCEPTION VALUES('Invalid Resolution Code', 'Resolution Code cannot be empty');
+		RETURN FALSE;
+	END IF;
+	
+	-- Additional validation for predefined resolution codes can be added here
+	
+	RETURN TRUE;
+END;
+
+/**
+ * Create standard JSON success response
+ */
+CREATE PROCEDURE CreateSuccessResponse(
+	INOUT refOutput REFERENCE,
+	IN message CHARACTER,
+	IN incidentId CHARACTER,
+	IN transactionId CHARACTER
+)
+BEGIN
+	SET refOutput.status = 'SUCCESS';
+	SET refOutput.message = message;
+	SET refOutput.incidentId = incidentId;
+	SET refOutput.transactionId = transactionId;
+	SET refOutput.timestamp = CURRENT_TIMESTAMP;
+END;
+
+/**
+ * Create standard JSON error response
+ */
+CREATE PROCEDURE CreateErrorResponse(
+	INOUT refOutput REFERENCE,
+	IN errorCode CHARACTER,
+	IN errorMessage CHARACTER,
+	IN transactionId CHARACTER
+)
+BEGIN
+	SET refOutput.status = 'ERROR';
+	SET refOutput.errorCode = errorCode;
+	SET refOutput.errorMessage = errorMessage;
+	SET refOutput.transactionId = transactionId;
+	SET refOutput.timestamp = CURRENT_TIMESTAMP;
+END;
+
+/**
+ * Log audit information (placeholder for actual implementation)
+ */
+CREATE PROCEDURE LogAuditInfo(
+	IN operation CHARACTER,
+	IN incidentId CHARACTER,
+	IN transactionId CHARACTER,
+	IN status CHARACTER,
+	IN details CHARACTER
+)
+BEGIN
+	-- In production, this would write to audit database or logging system
+	-- Placeholder for actual implementation
+	DECLARE auditMessage CHARACTER;
+	SET auditMessage = 'AUDIT: ' || operation || ' | IncidentID: ' || incidentId || 
+	                   ' | TransactionID: ' || transactionId || ' | Status: ' || status;
+	
+	IF details IS NOT NULL AND details <> '' THEN
+		SET auditMessage = auditMessage || ' | Details: ' || details;
+	END IF;
+	
+	-- Actual audit logging implementation would go here
+END;
