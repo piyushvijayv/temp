@@ -1,0 +1,105 @@
+BROKER SCHEMA esql.routine
+
+/**
+ * SAP_ADMS_AddIncidentComment_Compute.esql
+ * 
+ * Purpose: Transform JSON request from SAP to SOAP format for ADMS/OMS
+ * Operation: Add Incident Comment(s)
+ * HTTP Method: POST
+ * URI: ../incident/comment/v1
+ */
+
+CREATE COMPUTE MODULE SAP_ADMS_AddIncidentComment_Compute
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- Reference input message
+		DECLARE refInput REFERENCE TO InputRoot.JSON.Data;
+		
+		-- Validate mandatory fields
+		IF NOT EXISTS(refInput.incidentId[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'incidentId is required');
+		END IF;
+		
+		IF NOT EXISTS(refInput.comments[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'comments is required');
+		END IF;
+		
+		-- Set output message properties
+		SET OutputRoot.Properties = InputRoot.Properties;
+		SET OutputRoot.Properties.MessageSet = 'ADMS_OMS_MessageSet';
+		SET OutputRoot.Properties.MessageType = 'ChangedIncident';
+		
+		-- Create SOAP envelope
+		CREATE FIELD OutputRoot.XMLNSC.soapenv:Envelope;
+		DECLARE refEnvelope REFERENCE TO OutputRoot.XMLNSC.soapenv:Envelope;
+		
+		SET refEnvelope.(XMLNSC.NamespaceDecl)xmlns:soapenv = 'http://schemas.xmlsoap.org/soap/envelope/';
+		SET refEnvelope.(XMLNSC.NamespaceDecl)xmlns:inc = 'http://adms.oms.incident/v1';
+		
+		-- Create SOAP Header
+		CREATE FIELD refEnvelope.soapenv:Header;
+		DECLARE refHeader REFERENCE TO refEnvelope.soapenv:Header;
+		
+		-- Add authentication/security headers
+		SET refHeader.inc:Authentication.inc:Username = COALESCE(Environment.Variables.Username, 'SAP_USER');
+		SET refHeader.inc:Authentication.inc:Password = COALESCE(Environment.Variables.Password, '');
+		
+		-- Create SOAP Body
+		CREATE FIELD refEnvelope.soapenv:Body;
+		DECLARE refBody REFERENCE TO refEnvelope.soapenv:Body;
+		
+		-- Build ChangedIncident request for adding comments
+		CREATE FIELD refBody.inc:ChangedIncident;
+		DECLARE refRequest REFERENCE TO refBody.inc:ChangedIncident;
+		
+		-- Map fields from JSON to SOAP
+		SET refRequest.inc:IncidentId = refInput.incidentId;
+		SET refRequest.inc:CommentUpdate.inc:Timestamp = CURRENT_TIMESTAMP;
+		
+		-- Optional fields
+		IF EXISTS(refInput.opco[]) THEN
+			SET refRequest.inc:OpCo = refInput.opco;
+		END IF;
+		
+		IF EXISTS(refInput.commentedBy[]) THEN
+			SET refRequest.inc:CommentUpdate.inc:CommentedBy = refInput.commentedBy;
+		END IF;
+		
+		-- Handle comments - can be single comment or array of comments
+		DECLARE commentIndex INT 1;
+		DECLARE refComment REFERENCE TO refInput.comments;
+		
+		-- Check if comments is an array or single object
+		IF CARDINALITY(refInput.comments[]) > 0 THEN
+			-- Array of comments
+			WHILE LASTMOVE(refComment) DO
+				CREATE FIELD refRequest.inc:CommentUpdate.inc:Comment[commentIndex];
+				DECLARE refCommentNode REFERENCE TO refRequest.inc:CommentUpdate.inc:Comment[commentIndex];
+				
+				SET refCommentNode.inc:Text = refComment.text;
+				SET refCommentNode.inc:Type = COALESCE(refComment.type, 'GENERAL');
+				SET refCommentNode.inc:Priority = COALESCE(refComment.priority, 'NORMAL');
+				SET refCommentNode.inc:Timestamp = CURRENT_TIMESTAMP;
+				
+				IF EXISTS(refComment.author[]) THEN
+					SET refCommentNode.inc:Author = refComment.author;
+				END IF;
+				
+				SET commentIndex = commentIndex + 1;
+				MOVE refComment NEXTSIBLING;
+			END WHILE;
+		ELSE
+			-- Single comment as string
+			CREATE FIELD refRequest.inc:CommentUpdate.inc:Comment[1];
+			SET refRequest.inc:CommentUpdate.inc:Comment[1].inc:Text = refInput.comments;
+			SET refRequest.inc:CommentUpdate.inc:Comment[1].inc:Type = 'GENERAL';
+			SET refRequest.inc:CommentUpdate.inc:Comment[1].inc:Timestamp = CURRENT_TIMESTAMP;
+		END IF;
+		
+		-- Store original request for audit/logging
+		SET Environment.Variables.OriginalRequest = refInput;
+		SET Environment.Variables.TransactionId = COALESCE(refInput.transactionId, CAST(CURRENT_TIMESTAMP AS CHARACTER FORMAT 'yyyyMMddHHmmssSSS'));
+		
+		RETURN TRUE;
+	END;
+END MODULE;
