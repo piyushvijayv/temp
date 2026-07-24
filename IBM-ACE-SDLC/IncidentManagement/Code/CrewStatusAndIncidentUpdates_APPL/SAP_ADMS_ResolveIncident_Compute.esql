@@ -1,0 +1,114 @@
+BROKER SCHEMA esql.routine
+
+/**
+ * SAP_ADMS_ResolveIncident_Compute.esql
+ * 
+ * Purpose: Transform JSON request from SAP to SOAP format for ADMS/OMS
+ * Operation: Resolve Incident
+ * HTTP Method: POST
+ * URI: ../incident/completion/v1
+ */
+
+CREATE COMPUTE MODULE SAP_ADMS_ResolveIncident_Compute
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- Reference input message
+		DECLARE refInput REFERENCE TO InputRoot.JSON.Data;
+		
+		-- Validate mandatory fields
+		IF NOT EXISTS(refInput.incidentId[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'incidentId is required');
+		END IF;
+		
+		IF NOT EXISTS(refInput.resolutionCode[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'resolutionCode is required');
+		END IF;
+		
+		-- Set output message properties
+		SET OutputRoot.Properties = InputRoot.Properties;
+		SET OutputRoot.Properties.MessageSet = 'ADMS_OMS_MessageSet';
+		SET OutputRoot.Properties.MessageType = 'ChangedIncident';
+		
+		-- Create SOAP envelope
+		CREATE FIELD OutputRoot.XMLNSC.soapenv:Envelope;
+		DECLARE refEnvelope REFERENCE TO OutputRoot.XMLNSC.soapenv:Envelope;
+		
+		SET refEnvelope.(XMLNSC.NamespaceDecl)xmlns:soapenv = 'http://schemas.xmlsoap.org/soap/envelope/';
+		SET refEnvelope.(XMLNSC.NamespaceDecl)xmlns:inc = 'http://adms.oms.incident/v1';
+		
+		-- Create SOAP Header
+		CREATE FIELD refEnvelope.soapenv:Header;
+		DECLARE refHeader REFERENCE TO refEnvelope.soapenv:Header;
+		
+		-- Add authentication/security headers
+		SET refHeader.inc:Authentication.inc:Username = COALESCE(Environment.Variables.Username, 'SAP_USER');
+		SET refHeader.inc:Authentication.inc:Password = COALESCE(Environment.Variables.Password, '');
+		
+		-- Create SOAP Body
+		CREATE FIELD refEnvelope.soapenv:Body;
+		DECLARE refBody REFERENCE TO refEnvelope.soapenv:Body;
+		
+		-- Build ChangedIncident request for incident resolution
+		CREATE FIELD refBody.inc:ChangedIncident;
+		DECLARE refRequest REFERENCE TO refBody.inc:ChangedIncident;
+		
+		-- Map fields from JSON to SOAP
+		SET refRequest.inc:IncidentId = refInput.incidentId;
+		SET refRequest.inc:Resolution.inc:ResolutionCode = refInput.resolutionCode;
+		SET refRequest.inc:Resolution.inc:ResolutionTimestamp = CURRENT_TIMESTAMP;
+		SET refRequest.inc:Resolution.inc:Status = 'RESOLVED';
+		
+		-- Optional fields
+		IF EXISTS(refInput.opco[]) THEN
+			SET refRequest.inc:OpCo = refInput.opco;
+		END IF;
+		
+		IF EXISTS(refInput.resolvedBy[]) THEN
+			SET refRequest.inc:Resolution.inc:ResolvedBy = refInput.resolvedBy;
+		END IF;
+		
+		IF EXISTS(refInput.resolutionDescription[]) THEN
+			SET refRequest.inc:Resolution.inc:Description = refInput.resolutionDescription;
+		END IF;
+		
+		IF EXISTS(refInput.resolutionComments[]) THEN
+			SET refRequest.inc:Resolution.inc:Comments = refInput.resolutionComments;
+		END IF;
+		
+		IF EXISTS(refInput.actualRestorationTime[]) THEN
+			SET refRequest.inc:Resolution.inc:ActualRestorationTime = refInput.actualRestorationTime;
+		END IF;
+		
+		IF EXISTS(refInput.crewId[]) THEN
+			SET refRequest.inc:Resolution.inc:CrewId = refInput.crewId;
+		END IF;
+		
+		IF EXISTS(refInput.workOrderNumber[]) THEN
+			SET refRequest.inc:Resolution.inc:WorkOrderNumber = refInput.workOrderNumber;
+		END IF;
+		
+		-- Resolution details
+		IF EXISTS(refInput.resolutionDetails[]) THEN
+			CREATE FIELD refRequest.inc:Resolution.inc:ResolutionDetails;
+			DECLARE refDetails REFERENCE TO refRequest.inc:Resolution.inc:ResolutionDetails;
+			
+			IF EXISTS(refInput.resolutionDetails.causeCode[]) THEN
+				SET refDetails.inc:CauseCode = refInput.resolutionDetails.causeCode;
+			END IF;
+			
+			IF EXISTS(refInput.resolutionDetails.actionTaken[]) THEN
+				SET refDetails.inc:ActionTaken = refInput.resolutionDetails.actionTaken;
+			END IF;
+			
+			IF EXISTS(refInput.resolutionDetails.equipmentReplaced[]) THEN
+				SET refDetails.inc:EquipmentReplaced = refInput.resolutionDetails.equipmentReplaced;
+			END IF;
+		END IF;
+		
+		-- Store original request for audit/logging
+		SET Environment.Variables.OriginalRequest = refInput;
+		SET Environment.Variables.TransactionId = COALESCE(refInput.transactionId, CAST(CURRENT_TIMESTAMP AS CHARACTER FORMAT 'yyyyMMddHHmmssSSS'));
+		
+		RETURN TRUE;
+	END;
+END MODULE;
