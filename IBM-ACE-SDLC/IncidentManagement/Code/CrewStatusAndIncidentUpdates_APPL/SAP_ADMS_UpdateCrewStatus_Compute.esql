@@ -1,0 +1,85 @@
+BROKER SCHEMA esql.routine
+
+/**
+ * SAP_ADMS_UpdateCrewStatus_Compute.esql
+ * 
+ * Purpose: Transform JSON request from SAP to SOAP format for ADMS/OMS
+ * Operation: Update Crew Status
+ * HTTP Method: PATCH
+ * URI: ../incident/crew/status/v1
+ */
+
+CREATE COMPUTE MODULE SAP_ADMS_UpdateCrewStatus_Compute
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- Reference input message
+		DECLARE refInput REFERENCE TO InputRoot.JSON.Data;
+		
+		-- Validate mandatory fields
+		IF NOT EXISTS(refInput.crewId[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'crewId is required');
+		END IF;
+		
+		IF NOT EXISTS(refInput.status[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'status is required');
+		END IF;
+		
+		IF NOT EXISTS(refInput.incidentId[]) THEN
+			THROW USER EXCEPTION VALUES('Mandatory field missing', 'incidentId is required');
+		END IF;
+		
+		-- Set output message properties
+		SET OutputRoot.Properties = InputRoot.Properties;
+		SET OutputRoot.Properties.MessageSet = 'ADMS_OMS_MessageSet';
+		SET OutputRoot.Properties.MessageType = 'ChangedIncident';
+		
+		-- Create SOAP envelope
+		CREATE FIELD OutputRoot.XMLNSC.soapenv:Envelope;
+		DECLARE refEnvelope REFERENCE TO OutputRoot.XMLNSC.soapenv:Envelope;
+		
+		SET refEnvelope.(XMLNSC.NamespaceDecl)xmlns:soapenv = 'http://schemas.xmlsoap.org/soap/envelope/';
+		SET refEnvelope.(XMLNSC.NamespaceDecl)xmlns:inc = 'http://adms.oms.incident/v1';
+		
+		-- Create SOAP Header
+		CREATE FIELD refEnvelope.soapenv:Header;
+		DECLARE refHeader REFERENCE TO refEnvelope.soapenv:Header;
+		
+		-- Add authentication/security headers if required
+		SET refHeader.inc:Authentication.inc:Username = COALESCE(Environment.Variables.Username, 'SAP_USER');
+		SET refHeader.inc:Authentication.inc:Password = COALESCE(Environment.Variables.Password, '');
+		
+		-- Create SOAP Body
+		CREATE FIELD refEnvelope.soapenv:Body;
+		DECLARE refBody REFERENCE TO refEnvelope.soapenv:Body;
+		
+		-- Build ChangedIncident request for crew status update
+		CREATE FIELD refBody.inc:ChangedIncident;
+		DECLARE refRequest REFERENCE TO refBody.inc:ChangedIncident;
+		
+		-- Map fields from JSON to SOAP
+		SET refRequest.inc:IncidentId = refInput.incidentId;
+		SET refRequest.inc:CrewUpdate.inc:CrewId = refInput.crewId;
+		SET refRequest.inc:CrewUpdate.inc:Status = refInput.status;
+		SET refRequest.inc:CrewUpdate.inc:Timestamp = CURRENT_TIMESTAMP;
+		
+		-- Optional fields
+		IF EXISTS(refInput.opco[]) THEN
+			SET refRequest.inc:OpCo = refInput.opco;
+		END IF;
+		
+		IF EXISTS(refInput.comments[]) THEN
+			SET refRequest.inc:CrewUpdate.inc:Comments = refInput.comments;
+		END IF;
+		
+		IF EXISTS(refInput.location[]) THEN
+			SET refRequest.inc:CrewUpdate.inc:Location.inc:Latitude = refInput.location.latitude;
+			SET refRequest.inc:CrewUpdate.inc:Location.inc:Longitude = refInput.location.longitude;
+		END IF;
+		
+		-- Store original request for audit/logging
+		SET Environment.Variables.OriginalRequest = refInput;
+		SET Environment.Variables.TransactionId = COALESCE(refInput.transactionId, CAST(CURRENT_TIMESTAMP AS CHARACTER FORMAT 'yyyyMMddHHmmssSSS'));
+		
+		RETURN TRUE;
+	END;
+END MODULE;
